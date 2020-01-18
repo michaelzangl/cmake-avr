@@ -1,0 +1,9 @@
+# Upload the ${EXECUTABLE_NAME} to the target MCU
+# Flash
+${command_upload_flash} || exit 1
+# EEPROM
+${command_upload_eeprom} || exit 1
+# Fuses
+${command_upload_fuses} || exit 1
+
+echo "All done"

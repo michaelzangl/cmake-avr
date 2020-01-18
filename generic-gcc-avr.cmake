@@ -28,6 +28,8 @@
 #     the programmer hardware used, e.g. avrispmkII
 ##########################################################################
 
+set(DIR_OF_GENERIC_GCC_AVR_CMAKE ${CMAKE_CURRENT_LIST_DIR})
+
 ##########################################################################
 # options
 ##########################################################################
@@ -49,6 +51,7 @@ set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR avr)
 set(CMAKE_C_COMPILER ${AVR_CC})
 set(CMAKE_CXX_COMPILER ${AVR_CXX})
+
 
 ##########################################################################
 # Identification
@@ -103,16 +106,24 @@ if(NOT AVR_SIZE_ARGS)
     if(APPLE)
         set(AVR_SIZE_ARGS -B)
     else(APPLE)
-        set(AVR_SIZE_ARGS -C;--mcu=${AVR_MCU})
+        execute_process(COMMAND
+                ${AVR_SIZE_TOOL} -C;--mcu=${AVR_MCU} somefile.out
+                ERROR_VARIABLE avr_size_check_result)
+        # Error should contain the file name => params are ok
+        if(avr_size_check_result MATCHES ".*somefile\\.out.*")
+            set(AVR_SIZE_ARGS -C;--mcu=${AVR_MCU})
+        else(avr_size_check_result MATCHES ".*somefile\\.out.*")
+            set(AVR_SIZE_ARGS -B)
+        endif(avr_size_check_result MATCHES ".*somefile\\.out.*")
     endif(APPLE)
 endif(NOT AVR_SIZE_ARGS)
 
 # prepare base flags for upload tool
-set(AVR_UPLOADTOOL_BASE_OPTIONS -p ${AVR_MCU} -c ${AVR_PROGRAMMER})
+set(AVR_UPLOADTOOL_BASE_OPTIONS "-p ${AVR_MCU} -c ${AVR_PROGRAMMER} -V")
 
 # use AVR_UPLOADTOOL_BAUDRATE as baudrate for upload tool (if defined)
 if(AVR_UPLOADTOOL_BAUDRATE)
-    set(AVR_UPLOADTOOL_BASE_OPTIONS ${AVR_UPLOADTOOL_BASE_OPTIONS} -b ${AVR_UPLOADTOOL_BAUDRATE})
+    set(AVR_UPLOADTOOL_BASE_OPTIONS "${AVR_UPLOADTOOL_BASE_OPTIONS} -b ${AVR_UPLOADTOOL_BAUDRATE}")
 endif()
 
 ##########################################################################
@@ -142,6 +153,40 @@ endif(NOT ((CMAKE_BUILD_TYPE MATCHES Release) OR
 
 ##########################################################################
 
+# Useful for cross compiling, skips automatic compiler tests.
+set(CMAKE_TRY_COMPILE_TARGET_TYPE "STATIC_LIBRARY")
+##########################################################################
+# some cmake cross-compile necessities
+##########################################################################
+if(DEFINED ENV{AVR_FIND_ROOT_PATH})
+    set(CMAKE_FIND_ROOT_PATH $ENV{AVR_FIND_ROOT_PATH})
+else(DEFINED ENV{AVR_FIND_ROOT_PATH})
+    if(EXISTS "/opt/local/avr")
+        set(CMAKE_FIND_ROOT_PATH "/opt/local/avr")
+    elseif(EXISTS "/usr/avr")
+        set(CMAKE_FIND_ROOT_PATH "/usr/avr")
+    elseif(EXISTS "/usr/lib/avr")
+        set(CMAKE_FIND_ROOT_PATH "/usr/lib/avr")
+    elseif(EXISTS "/usr/local/CrossPack-AVR")
+        set(CMAKE_FIND_ROOT_PATH "/usr/local/CrossPack-AVR")
+    else(EXISTS "/opt/local/avr")
+        message(FATAL_ERROR "Please set AVR_FIND_ROOT_PATH in your environment.")
+    endif(EXISTS "/opt/local/avr")
+endif(DEFINED ENV{AVR_FIND_ROOT_PATH})
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+# not added automatically, since CMAKE_SYSTEM_NAME is "generic"
+set(CMAKE_SYSTEM_INCLUDE_PATH "${CMAKE_FIND_ROOT_PATH}/include")
+set(CMAKE_SYSTEM_LIBRARY_PATH "${CMAKE_FIND_ROOT_PATH}/lib")
+
+if(NOT IS_DIRECTORY "${CMAKE_SYSTEM_INCLUDE_PATH}" OR NOT EXISTS "${CMAKE_SYSTEM_INCLUDE_PATH}/avr/eeprom.h")
+    message(FATAL_ERROR "Could not find required avr header files in: ${CMAKE_SYSTEM_INCLUDE_PATH}. Did you install arv-libc?")
+endif(NOT IS_DIRECTORY "${CMAKE_SYSTEM_INCLUDE_PATH}" OR NOT EXISTS "${CMAKE_SYSTEM_INCLUDE_PATH}/avr/eeprom.h")
+
+# Default compiler options
+add_definitions("-DF_CPU=${MCU_SPEED}")
+
 ##########################################################################
 # target file name add-on
 ##########################################################################
@@ -150,6 +195,22 @@ if(WITH_MCU)
 else(WITH_MCU)
     set(MCU_TYPE_FOR_FILENAME "")
 endif(WITH_MCU)
+
+
+##########################################################################
+# Fuses
+##########################################################################
+
+set(uploadscript_in "uploadscript.sh.in")
+# Set MCU_FUSES_SIZE = <number of fuse bytes for this mcu>
+execute_process(COMMAND
+        sh "-c" "echo '#include <avr/io.h>' | ${AVR_CC} -I${CMAKE_SYSTEM_INCLUDE_PATH} -mmcu=${AVR_MCU} - -E -dM | grep FUSE_MEMORY_SIZE | sed 's=#define FUSE_MEMORY_SIZE =='"
+        OUTPUT_VARIABLE MCU_FUSES_SIZE OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+if(NOT (MCU_FUSES_SIZE MATCHES 2) AND (NOT (MCU_FUSES_SIZE MATCHES 3)))
+    message(FATAL_ERROR "Detected fuses size ${MCU_FUSES_SIZE} is not supported.")
+endif(NOT (MCU_FUSES_SIZE MATCHES 2) AND (NOT (MCU_FUSES_SIZE MATCHES 3)))
+
 
 ##########################################################################
 # add_avr_executable
@@ -171,6 +232,13 @@ function(add_avr_executable EXECUTABLE_NAME)
    set(hex_file ${EXECUTABLE_NAME}${MCU_TYPE_FOR_FILENAME}.hex)
    set(lst_file ${EXECUTABLE_NAME}${MCU_TYPE_FOR_FILENAME}.lst)
    set(map_file ${EXECUTABLE_NAME}${MCU_TYPE_FOR_FILENAME}.map)
+   set(fuses_file ${EXECUTABLE_NAME}${MCU_TYPE_FOR_FILENAME}-fuses.bin)
+   set(lfuse_file ${EXECUTABLE_NAME}${MCU_TYPE_FOR_FILENAME}-lfuse.bin)
+   set(hfuse_file ${EXECUTABLE_NAME}${MCU_TYPE_FOR_FILENAME}-hfuse.bin)
+   if(MCU_FUSES_SIZE GREATER 2)
+     set(efuse_file ${EXECUTABLE_NAME}${MCU_TYPE_FOR_FILENAME}-efuse.bin)
+   endif(MCU_FUSES_SIZE GREATER 2)
+   set(uploadscript_file ${EXECUTABLE_NAME}${MCU_TYPE_FOR_FILENAME}-upload.sh)
    set(eeprom_image ${EXECUTABLE_NAME}${MCU_TYPE_FOR_FILENAME}-eeprom.hex)
 
    # elf file
@@ -209,11 +277,45 @@ function(add_avr_executable EXECUTABLE_NAME)
       DEPENDS ${elf_file}
    )
 
-   add_custom_target(
-      ${EXECUTABLE_NAME}
-      ALL
-      DEPENDS ${hex_file} ${lst_file} ${eeprom_image}
+   add_custom_command(
+      OUTPUT ${fuses_file}
+      COMMAND
+         ${AVR_OBJCOPY} --only-section .fuse -O binary ${elf_file} ${fuses_file}
+      DEPENDS ${elf_file}
    )
+
+   add_custom_target(
+           ${EXECUTABLE_NAME}
+           ALL
+           DEPENDS ${hex_file} ${lst_file} ${eeprom_image}
+   )
+
+   add_custom_command(
+      OUTPUT ${lfuse_file}
+      COMMAND
+         dd skip=0 count=1 bs=1 if=${fuses_file} of=${lfuse_file}
+      DEPENDS ${fuses_file}
+   )
+   add_custom_target(${EXECUTABLE_NAME}-lfuse DEPENDS ${lfuse_file})
+   add_dependencies(${EXECUTABLE_NAME} ${EXECUTABLE_NAME}-lfuse)
+   add_custom_command(
+      OUTPUT ${hfuse_file}
+      COMMAND
+         dd skip=1 count=1 bs=1 if=${fuses_file} of=${hfuse_file}
+      DEPENDS ${fuses_file}
+   )
+   add_custom_target(${EXECUTABLE_NAME}-hfuse DEPENDS ${hfuse_file})
+   add_dependencies(${EXECUTABLE_NAME} ${EXECUTABLE_NAME}-hfuse)
+   if(MCU_FUSES_SIZE GREATER 2)
+       add_custom_command(
+          OUTPUT ${efuse_file}
+          COMMAND
+             dd skip=2 count=1 bs=1 if=${fuses_file} of=${efuse_file}
+          DEPENDS ${fuses_file}
+       )
+       add_custom_target(${EXECUTABLE_NAME}-efuse DEPENDS ${efuse_file})
+       add_dependencies(${EXECUTABLE_NAME} ${EXECUTABLE_NAME}-efuse)
+   endif(MCU_FUSES_SIZE GREATER 2)
 
    set_target_properties(
       ${EXECUTABLE_NAME}
@@ -229,24 +331,45 @@ function(add_avr_executable EXECUTABLE_NAME)
    )
 
    # upload - with avrdude
+   set(command_upload_flash "${AVR_UPLOADTOOL} ${AVR_UPLOADTOOL_BASE_OPTIONS} ${AVR_UPLOADTOOL_OPTIONS} \
+           -U flash:w:${hex_file} \
+           -P ${AVR_UPLOADTOOL_PORT}")
    add_custom_target(
       upload_${EXECUTABLE_NAME}
-      ${AVR_UPLOADTOOL} ${AVR_UPLOADTOOL_BASE_OPTIONS} ${AVR_UPLOADTOOL_OPTIONS}
-         -U flash:w:${hex_file}
-         -P ${AVR_UPLOADTOOL_PORT}
+      sh -c "${command_upload_flash}"
       DEPENDS ${hex_file}
       COMMENT "Uploading ${hex_file} to ${AVR_MCU} using ${AVR_PROGRAMMER}"
    )
 
    # upload eeprom only - with avrdude
    # see also bug http://savannah.nongnu.org/bugs/?40142
+   set(command_upload_eeprom "${AVR_UPLOADTOOL} ${AVR_UPLOADTOOL_BASE_OPTIONS} ${AVR_UPLOADTOOL_OPTIONS} \
+           -U eeprom:w:${eeprom_image} \
+           -P ${AVR_UPLOADTOOL_PORT}")
    add_custom_target(
       upload_${EXECUTABLE_NAME}_eeprom
-      ${AVR_UPLOADTOOL} ${AVR_UPLOADTOOL_BASE_OPTIONS} ${AVR_UPLOADTOOL_OPTIONS}
-         -U eeprom:w:${eeprom_image}
-         -P ${AVR_UPLOADTOOL_PORT}
+      sh -c "${command_upload_eeprom}"
       DEPENDS ${eeprom_image}
       COMMENT "Uploading ${eeprom_image} to ${AVR_MCU} using ${AVR_PROGRAMMER}"
+   )
+
+   if (MCU_FUSES_SIZE GREATER 2)
+       set(command_upload_fuses
+               "${AVR_UPLOADTOOL} ${AVR_UPLOADTOOL_BASE_OPTIONS} ${AVR_UPLOADTOOL_OPTIONS} -P ${AVR_UPLOADTOOL_PORT} \
+               -U hfuse:w:${hfuse_file}:r -U lfuse:w:${lfuse_file}:r -U efuse:w:${efuse_file}:r")
+       set(command_upload_fuses_deps ${hfuse_file} ${lfuse_file} ${efuse_file})
+   else (MCU_FUSES_SIZE GREATER 2)
+       set(command_upload_fuses
+               "${AVR_UPLOADTOOL} ${AVR_UPLOADTOOL_BASE_OPTIONS} ${AVR_UPLOADTOOL_OPTIONS} -P ${AVR_UPLOADTOOL_PORT} \
+               -U hfuse:w:${hfuse_file}:r -U lfuse:w:${lfuse_file}:r")
+       set(command_upload_fuses_deps ${hfuse_file} ${lfuse_file})
+   endif (MCU_FUSES_SIZE GREATER 2)
+
+   add_custom_target(
+      upload_${EXECUTABLE_NAME}_fuses
+      sh -c "${command_upload_fuses}"
+      DEPENDS ${command_upload_fuses_deps}
+      COMMENT "Setting fuses for ${AVR_MCU} using ${AVR_PROGRAMMER}"
    )
 
    # disassemble
@@ -255,6 +378,9 @@ function(add_avr_executable EXECUTABLE_NAME)
       ${AVR_OBJDUMP} -h -S ${elf_file} > ${EXECUTABLE_NAME}.lst
       DEPENDS ${elf_file}
    )
+
+   configure_file(${DIR_OF_GENERIC_GCC_AVR_CMAKE}/uploadscript.sh.in ${uploadscript_file})
+
 endfunction(add_avr_executable)
 
 
@@ -402,3 +528,4 @@ function(avr_generate_fixed_targets)
          COMMENT "Program calibration status of internal oscillator from ${AVR_MCU}_calib.hex."
    )
 endfunction()
+
